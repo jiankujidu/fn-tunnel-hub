@@ -9,6 +9,7 @@ AIGC:
 
 飞牛 fnOS 多引擎内网穿透应用，一个应用集成 4 大免费方案，**免公网 IP、免 FRP 服务器**，NAS 主动出站建连，支持绑定自己的域名。
 本版本为**原生模式**：四引擎二进制全部内置，无需 Docker，按架构自动加载 amd64 / arm64。
+运行状态页**实时显示**各引擎连接详情（IP / 绑定域名 / 网络ID / Peer ID / 进程 PID）与系统信息（内网 IP、面板端口、架构、运行时长），每 5 秒自动刷新。
 
 ## 内置方案（全部免费）
 
@@ -25,7 +26,7 @@ AIGC:
 
 ```
 fn-tunnel-hub/
-├── manifest            # 应用元数据（version=2.2.0, service_port=19999）
+├── manifest            # 应用元数据（version=2.2.1, service_port=19999）
 ├── ICON.PNG            # 64x64 图标
 ├── ICON_256.PNG        # 256x256 图标
 ├── config/             # privilege 权限声明
@@ -33,7 +34,7 @@ fn-tunnel-hub/
 ├── wizard/install      # 安装向导：面板端口 + 自动更新
 └── app/
     ├── bin/amd64|arm64 # 四引擎二进制（cloudflared/tailscale(+d)/zerotier-one/openp2p/busybox）
-    └── www/            # index.html（状态页+设置页+教程页）+ config.cgi（配置接口）
+    └── www/            # index.html（状态页+设置页+教程页）+ config.cgi（配置接口）+ status.cgi（实时状态接口）
 ```
 
 ## 打包
