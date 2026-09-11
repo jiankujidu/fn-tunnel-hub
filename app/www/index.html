@@ -23,6 +23,17 @@ h1{font-size:22px;margin:0}
 .badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;margin-right:6px}
 .ok{background:#e2f5e9;color:#128a4b}
 .wait{background:#fdf0d8;color:#b5710a}
+/* 运行状态详情 */
+.sysbox{background:#fff;border:1px solid #e1e7f0;border-radius:14px;padding:14px 18px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px 24px;align-items:center;box-shadow:0 1px 4px rgba(30,50,90,.06)}
+.sysbox .it{display:flex;flex-direction:column;gap:2px}
+.sysbox .k{font-size:11px;color:#97a1b3}
+.sysbox .v{font-size:13px;color:#26303f;font-weight:600}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,"Consolas",monospace;color:#26303f;background:#f0f4fa;border-radius:5px;padding:1px 6px;font-size:12.5px}
+.dtl{display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:8px;padding-top:8px;border-top:1px dashed #e6ecf5}
+.dtl .kv{display:flex;flex-direction:column;gap:1px}
+.dtl .k{font-size:11px;color:#97a1b3}
+.dtl .v{font-size:13px;color:#26303f;font-weight:500}
+.dtl .v.off{color:#c2cad8;font-weight:400}
 a{color:#1a6bff;text-decoration:none}
 .set-group{background:#fff;border:1px solid #e1e7f0;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 1px 4px rgba(30,50,90,.06)}
 .set-group h3{margin:0 0 4px;font-size:16px;color:#26303f}
@@ -87,6 +98,7 @@ a{color:#1a6bff;text-decoration:none}
 
   <!-- 状态页 -->
   <div class="page show" id="page-status">
+    <div class="sysbox" id="sysinfo"></div>
     <div class="cards" id="cards">加载中…</div>
     <div class="hint">状态每 5 秒自动刷新。修改引擎配置请到「设置」页，保存后引擎自动重启生效。</div>
   </div>
@@ -139,9 +151,10 @@ a{color:#1a6bff;text-decoration:none}
   <!-- 教程页 -->
   <div class="page" id="page-tutorial">
     <div class="doc">
-      <h2>使用教程（v2.1.2）</h2>
+      <h2>使用教程（v2.2.1）</h2>
       <h3>第一步 · 打开面板</h3>
       <p>安装完成后，飞牛桌面点「穿透管家」图标，或在浏览器打开 <code>http://NAS_IP:19999</code>（自定义端口则在向导里设置）。面板三个页签：<b>运行状态</b> / <b>设置</b> / <b>教程</b>。</p>
+      <p>运行状态页顶部显示本机信息（内网 IP、面板端口、架构、运行时长），每张引擎卡片实时展示其连接详情：Cloudflare 绑定域名、Tailscale/ZeroTier 虚拟 IP 与节点、openP2P 的 Peer ID 等，每 5 秒自动刷新。</p>
 
       <h3>第二步 · 设置各引擎（Token 填这里）</h3>
       <p>到「设置」页，勾选要启用的引擎开关，填入对应 Token，点「保存配置并重启引擎」即生效。Token 保存后回显自动打码，不会明文泄露。四个引擎的凭据获取方法如下：</p>
@@ -224,20 +237,76 @@ const engines=[
  {name:"ZeroTier",desc:"虚拟局域网，P2P 直连，免费 50 节点",key:"zt"},
  {name:"openP2P",desc:"开源 P2P 打洞，支持域名绑定，不限速",key:"p2p"}
 ];
-const root="status.json";
+const root="status.cgi";
+
+/* 系统信息栏：版本/架构/内网IP/面板端口/运行时长 */
+function renderSys(st){
+ const box=document.getElementById("sysinfo");
+ if(!st||!st.version){ box.innerHTML=""; return; }
+ const mk=(k,v)=>`<span class="it"><span class="k">${k}</span><span class="v">${v||"—"}</span></span>`;
+ box.innerHTML=
+  mk("应用版本","v"+(st.version||""))+
+  mk("系统架构",(st.arch||"").toUpperCase())+
+  mk("内网 IP",st.lanIp?'<span class="mono">'+st.lanIp+'</span>':"未获取")+
+  mk("面板端口",st.panelPort?"<span class='mono'>:"+st.panelPort+"</span>":"")+
+  mk("已运行",st.uptime||"");
+}
+
+/* 详情字段渲染：k 标签, v 值, off 是否降级显示 */
+function dtl(k,v,opt){
+ opt=opt||{};
+ const off=(!v||v==="—"||v==="-")?" off":"";
+ return `<span class="kv"><span class="k">${k}</span><span class="v${off}">${v||(opt.placeholder||"—")}</span></span>`;
+}
 
 function render(st){
  const box=document.getElementById("cards");
  box.innerHTML="";
+ const sys=(st&&st.version)?st:{};
+ renderSys(sys);
  engines.forEach(e=>{
-  const running=!!(st&&st[e.key]);
+  const s=(st&&st.engines)?st.engines[e.key]:null;
+  const running=!!(s&&s.running);
+  let body="";
+  if(!running){
+   body=`<span class="badge wait">未启用</span><div class="dtl">`+
+        dtl("状态","未启用")+
+        dtl("提示",(st?"已配置 Token 后启用":"面板初始化中…")||"",{placeholder:"—"})+
+        `</div>`;
+  }else if(s){
+   body=`<span class="badge ok">运行中</span>`;
+   const parts=[];
+   if(e.key==="cf"){
+    parts.push(dtl("域名",s.domain?"<span class='mono'>"+s.domain+"</span>":"未绑定",{placeholder:"去设置页绑定"}));
+    parts.push(dtl("进程 PID",s.pid||"—"));
+   }
+   if(e.key==="ts"){
+    parts.push(dtl("虚拟 IP",s.ip?"<span style='color:#1a6bff'>"+s.ip+"</span>":"已连接未取得 IP",{placeholder:"直连中…"}));
+    parts.push(dtl("节点名",s.hostname||"—"));
+    parts.push(dtl("进程 PID",s.pid||"—"));
+   }
+   if(e.key==="zt"){
+    parts.push(dtl("虚拟 IP",s.ip?"<span style='color:#1a6bff'>"+s.ip+"</span>":"未授权/待批准",{placeholder:"组网中…"}));
+    parts.push(dtl("Network ID",s.netid?"<span class='mono'>"+s.netid+"</span>":(st?"去设置页填":"—")));
+    parts.push(dtl("进程 PID",s.pid||"—"));
+   }
+   if(e.key==="p2p"){
+    parts.push(dtl("Peer ID",s.peerid?"<span class='mono'>"+s.peerid+"</span>":"未配置",{placeholder:"去设置页填"}));
+    parts.push(dtl("进程 PID",s.pid||"—"));
+   }
+   body+=`<div class="dtl">${parts.join("")}</div>`;
+  }
   box.insertAdjacentHTML("beforeend",
-   `<div class="card"><h3>${e.name}</h3><p>${e.desc}</p>`+
-   `<p><span class="badge ${running?"ok":"wait"}">${running?"运行中":"未启用"}</span></p></div>`);
+   `<div class="card"><h3>${e.name}</h3><p>${e.desc}</p>`+body+"</div>");
  });
 }
 function loadStatus(){
- fetch(root,{cache:"no-store"}).then(r=>r.ok?r.json():null).then(render).catch(()=>render(null));
+ const fallback=function(){ fetch("status.json",{cache:"no-store"})
+  .then(r=>r.ok?r.json():null).then(d=>render(d||null)).catch(()=>render(null)); };
+ fetch(root,{cache:"no-store"})
+  .then(r=>r.ok?r.json():Promise.reject())
+  .then(render)
+  .catch(fallback);
 }
 loadStatus();
 setInterval(loadStatus, 5000);
