@@ -1,0 +1,15 @@
+{
+  "data-share": {
+    "shares": [
+      {
+        "name": "fn-tunnel-hub"
+      },
+      {
+        "name": "fn-tunnel-hub/bin"
+      },
+      {
+        "name": "fn-tunnel-hub/www"
+      }
+    ]
+  }
+}
