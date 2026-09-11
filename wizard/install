@@ -1,0 +1,31 @@
+[
+  {
+    "stepTitle": "安装设置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "<p>穿透管家：多引擎内网穿透。安装无需填写任何 Token / 配置，<strong>全部安装完成后在应用主页面的「设置」里配置</strong>即可。</p><p>所有方案均<strong>无需公网IP、无需FRP服务器</strong>，NAS 主动出站连接，支持 x86_64 / arm64 双架构。四大免费不限流方案：Cloudflare Tunnel（可绑自己域名）、Tailscale、ZeroTier、openP2P。</p><p>下方仅保留「面板端口」等基本项，其余引擎开关与 Token 首次启动后在主页面设置。</p>"
+      },
+      {
+        "type": "text",
+        "field": "panel_port",
+        "label": "面板端口",
+        "placeholder": "19999（可改，如 8080/9000 等）",
+        "initValue": "19999",
+        "rules": []
+      },
+      {
+        "type": "checkbox",
+        "field": "auto_update",
+        "label": "自动更新（默认开启）",
+        "options": [
+          {
+            "label": "启用自动下载最新版并在更新后自动重启",
+            "value": "true"
+          }
+        ],
+        "initValue": "true"
+      }
+    ]
+  }
+]
