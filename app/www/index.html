@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>穿透管家 - fnOS</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f2f5f9;color:#26303f;margin:0;padding:24px 16px}
+.wrap{max-width:880px;margin:0 auto}
+h1{font-size:22px;margin:0}
+.sub{color:#7c879a;font-size:13px;margin:6px 0 0}
+.tabs{display:flex;gap:8px;margin:20px 0 16px;border-bottom:1px solid #dfe6ef;padding-bottom:10px}
+.tab{padding:8px 20px;border-radius:20px;cursor:pointer;font-size:14px;color:#64708a;border:1px solid transparent;user-select:none;background:transparent}
+.tab.active{background:#1a6bff;color:#fff}
+.tab:not(.active):hover{background:#e6ecf5;color:#1a6bff}
+.page{display:none}
+.page.show{display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+.card{background:#fff;border:1px solid #e1e7f0;border-radius:14px;padding:18px;box-shadow:0 1px 4px rgba(30,50,90,.06)}
+.card h3{margin:0 0 8px;font-size:16px;color:#26303f}
+.card p{margin:4px 0;color:#7c879a;font-size:13px;line-height:1.6}
+.badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;margin-right:6px}
+.ok{background:#e2f5e9;color:#128a4b}
+.wait{background:#fdf0d8;color:#b5710a}
+a{color:#1a6bff;text-decoration:none}
+.set-group{background:#fff;border:1px solid #e1e7f0;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 1px 4px rgba(30,50,90,.06)}
+.set-group h3{margin:0 0 4px;font-size:16px;color:#26303f}
+.set-group .desc{color:#7c879a;font-size:13px;margin:0 0 14px;line-height:1.6}
+.row{display:flex;align-items:center;gap:10px;margin:10px 0}
+.row label.lbl{width:118px;flex:0 0 118px;font-size:13px;color:#26303f}
+.row input[type=text],.row input[type=password]{flex:1;background:#f8fafc;border:1px solid #d7dfea;border-radius:8px;color:#26303f;padding:9px 12px;font-size:14px;min-width:0}
+.row input:focus{outline:none;border-color:#1a6bff;background:#fff}
+.switch{position:relative;width:44px;height:24px;flex:0 0 44px}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#d3dce8;border-radius:24px;transition:.2s;cursor:pointer}
+.slider:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+.switch input:checked+.slider{background:#1a6bff}
+.switch input:checked+.slider:before{transform:translateX(20px)}
+.hint{color:#7c879a;font-size:12px;line-height:1.8;margin:6px 0 0}
+.help-links{color:#1a6bff;font-size:12px}
+.savebar{position:sticky;bottom:12px;margin-top:20px;text-align:center}
+.btn{padding:13px 34px;border-radius:10px;font-size:15px;font-weight:600;border:none;cursor:pointer;background:#1a6bff;color:#fff}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.msg{margin-top:10px;font-size:13px}
+.msg.ok{color:#128a4b}
+.msg.err{color:#e0483e}
+.small{color:#97a1b3;font-size:12px}
+/* 教程页 */
+.doc{background:#fff;border:1px solid #e1e7f0;border-radius:14px;padding:22px;box-shadow:0 1px 4px rgba(30,50,90,.06)}
+.doc h2{font-size:18px;color:#26303f;margin:22px 0 8px;border-left:4px solid #1a6bff;padding-left:10px}
+.doc h2:first-child{margin-top:0}
+.doc h3{font-size:15px;color:#26303f;margin:16px 0 6px}
+.doc p,.doc li{color:#54607a;font-size:13.5px;line-height:1.85;margin:6px 0}
+.doc ol,.doc ul{margin:6px 0 6px 4px;padding-left:22px}
+.doc code{background:#f0f4fa;border:1px solid #e1e7f0;border-radius:5px;padding:1px 6px;font-size:12.5px;color:#1a6bff}
+.doc table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+.doc th,.doc td{border:1px solid #e1e7f0;padding:8px 10px;text-align:left}
+.doc th{background:#f5f8fc;color:#26303f}
+.doc td{color:#54607a}
+/* 弹窗 */
+.mask{position:fixed;inset:0;background:rgba(40,55,80,.5);display:none;align-items:center;justify-content:center;z-index:99}
+.mask.show{display:flex}
+.popup{background:#fff;border:1px solid #e1e7f0;border-radius:16px;max-width:380px;width:92%;padding:26px 22px;box-shadow:0 18px 50px rgba(30,50,90,.25)}
+.popup h2{margin:0 0 6px;font-size:20px;color:#26303f}
+.popup .sub{color:#7c879a;font-size:13px;margin:0 0 18px;line-height:1.7}
+.popup .row{display:flex;flex-direction:column;gap:12px}
+.pbtn{display:block;text-align:center;padding:13px 16px;border-radius:10px;font-size:15px;font-weight:600;border:1px solid #e1e7f0}
+.pbtn.qq{background:#1a6bff;border-color:#1a6bff;color:#fff}
+.pbtn.gzh{background:#e2f5e9;border-color:#b9e6cb;color:#128a4b}
+.pbtn.gh{background:#24292e;border-color:#24292e;color:#fff}
+.pbtn.tg{background:#29a9eb;border-color:#29a9eb;color:#fff}
+.popup .sep{text-align:center;margin:6px 0;color:#97a1b3;font-size:12px}
+.popup .close{text-align:right;margin-top:14px}
+.popup .close a{font-size:13px;color:#7c879a}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>穿透管家</h1>
+  <p class="sub">多引擎内网穿透 · 免费方案任选 · 免公网IP / 免FRP · 全内置免 Docker</p>
+  <div class="tabs">
+    <div class="tab active" onclick="showPage('status')">运行状态</div>
+    <div class="tab" onclick="showPage('settings')">设置</div>
+    <div class="tab" onclick="showPage('tutorial')">教程</div>
+  </div>
+
+  <!-- 状态页 -->
+  <div class="page show" id="page-status">
+    <div class="cards" id="cards">加载中…</div>
+    <div class="hint">状态每 5 秒自动刷新。修改引擎配置请到「设置」页，保存后引擎自动重启生效。</div>
+  </div>
+
+  <!-- 设置页 -->
+  <div class="page" id="page-settings">
+    <div class="set-group">
+      <h3>Cloudflare Tunnel</h3>
+      <p class="desc">绑定自己的域名，全球边缘节点，免费不限流量。Token 获取方法见「教程」页。<a class="help-links" href="https://dash.cloudflare.com/" target="_blank">控制台 ↗</a></p>
+      <div class="row"><label class="lbl">启用</label><label class="switch"><input type="checkbox" id="enable_cf"><span class="slider"></span></label></div>
+      <div class="row"><label class="lbl">Install Token</label><input type="password" id="cf_token" placeholder="eyJhIjoi..." autocomplete="off"></div>
+      <div class="row"><label class="lbl">绑定域名</label><input type="text" id="cf_hostname" placeholder="app.yourdomain.com"></div>
+    </div>
+
+    <div class="set-group">
+      <h3>Tailscale</h3>
+      <p class="desc">P2P 直连打洞，直连不限速不限流，支持 Funnel 对外暴露。获取方法见「教程」页。<a class="help-links" href="https://login.tailscale.com/admin/settings/keys" target="_blank">控制台 ↗</a></p>
+      <div class="row"><label class="lbl">启用</label><label class="switch"><input type="checkbox" id="enable_ts"><span class="slider"></span></label></div>
+      <div class="row"><label class="lbl">Auth Key</label><input type="password" id="ts_authkey" placeholder="tskey-auth-..." autocomplete="off"></div>
+      <div class="row"><label class="lbl">节点名</label><input type="text" id="ts_hostname" placeholder="fnos-nas" value="fnos-nas"></div>
+    </div>
+
+    <div class="set-group">
+      <h3>ZeroTier</h3>
+      <p class="desc">组虚拟局域网，P2P 直连，免费 50 节点。获取方法见「教程」页。<a class="help-links" href="https://my.zerotier.com/" target="_blank">控制台 ↗</a></p>
+      <div class="row"><label class="lbl">启用</label><label class="switch"><input type="checkbox" id="enable_zt"><span class="slider"></span></label></div>
+      <div class="row"><label class="lbl">Network ID</label><input type="text" id="zt_netid" placeholder="a1b2c3d4e5f6f7f8"></div>
+    </div>
+
+    <div class="set-group">
+      <h3>openP2P</h3>
+      <p class="desc">开源 P2P 打洞，支持域名绑定，不限速不限流。获取方法见「教程」页。<a class="help-links" href="https://openp2p.cn/" target="_blank">控制台 ↗</a></p>
+      <div class="row"><label class="lbl">启用</label><label class="switch"><input type="checkbox" id="enable_p2p"><span class="slider"></span></label></div>
+      <div class="row"><label class="lbl">Peer ID</label><input type="text" id="p2p_peerid" placeholder="123456"></div>
+      <div class="row"><label class="lbl">App Key</label><input type="password" id="p2p_token" placeholder="节点密钥" autocomplete="off"></div>
+    </div>
+
+    <div class="set-group">
+      <h3>面板</h3>
+      <p class="desc">面板监听端口（默认 19999）。修改后需在 fnOS <strong>重启本应用</strong> 方可生效，本次保存仅记录。</p>
+      <div class="row"><label class="lbl">面板端口</label><input type="text" id="panel_port" placeholder="19999"></div>
+    </div>
+
+    <div class="savebar">
+      <button class="btn" id="saveBtn" onclick="saveCfg()">保存配置并重启引擎</button>
+      <div class="msg" id="saveMsg"></div>
+    </div>
+  </div>
+
+  <!-- 教程页 -->
+  <div class="page" id="page-tutorial">
+    <div class="doc">
+      <h2>使用教程（v2.1.2）</h2>
+      <h3>第一步 · 打开面板</h3>
+      <p>安装完成后，飞牛桌面点「穿透管家」图标，或在浏览器打开 <code>http://NAS_IP:19999</code>（自定义端口则在向导里设置）。面板三个页签：<b>运行状态</b> / <b>设置</b> / <b>教程</b>。</p>
+
+      <h3>第二步 · 设置各引擎（Token 填这里）</h3>
+      <p>到「设置」页，勾选要启用的引擎开关，填入对应 Token，点「保存配置并重启引擎」即生效。Token 保存后回显自动打码，不会明文泄露。四个引擎的凭据获取方法如下：</p>
+
+      <h3>① Cloudflare Tunnel（推荐：外网直接访问，可绑自己域名）</h3>
+      <ol>
+        <li>注册 Cloudflare 并把域名托管进去：<code>https://dash.cloudflare.com/</code></li>
+        <li>进入 Zero Trust：<code>https://one.dash.cloudflare.com/</code> → Networks → Tunnels → Create a tunnel（首次需先开通免费套餐）</li>
+        <li>创建时选 Docker 方式，页面会展示 <code>cloudflared tunnel run --token &lt;TOKEN&gt;</code>，其中 &lt;TOKEN&gt; 就是 <b>Install Token</b>，填入设置页</li>
+        <li>给 Tunnel 添加 Public Hostname：子域如 <code>app</code>、域名选你的、Service 填 <code>http://NAS_IP:19999</code></li>
+        <li>保存后从外网访问 <code>https://app.你的域名.com</code> 即可</li>
+      </ol>
+
+      <h3>② Tailscale（P2P 组网直连，不限速）</h3>
+      <ol>
+        <li>注册：<code>https://login.tailscale.com/</code>（免费，可用 Google/GitHub 登录）</li>
+        <li>生成一次性密钥：Admin → Settings → Keys → Generate auth key → 复制，填入 <b>Auth Key</b></li>
+        <li>其他设备装 Tailscale 登录同一账号即组网，获得 100.x IP 直连</li>
+      </ol>
+
+      <h3>③ ZeroTier（虚拟局域网，免费 50 节点）</h3>
+      <ol>
+        <li>注册：<code>https://my.zerotier.com/</code></li>
+        <li>Create A Network，进入网络详情页，顶部 16 位十六进制 <b>Network ID</b> 填入设置页</li>
+        <li>其他设备加入同一网络，并在网络详情页把本机节点 Auth 批准</li>
+      </ol>
+
+      <h3>④ openP2P（开源 P2P 打洞，免服务器）</h3>
+      <ol>
+        <li>官网：<code>https://openp2p.cn/</code>，控制台：<code>https://console.openp2p.cn/</code></li>
+        <li>注册登录后，节点信息页展示 <b>节点 ID</b>（填设置页 <code>Peer ID</code>）与 <b>Token</b>（纯数字 <code>App Key</code>）。openP2P 要求 Token 必须为纯数字，非数字会保存但引擎不会启动。</li>
+      </ol>
+
+      <h3>常见问题</h3>
+      <table>
+        <tr><th>问题</th><th>处理</th></tr>
+        <tr><td>面板打不开</td><td>确认端口 19999 未被占用；自定义端口用 NAS_IP:端口 访问</td></tr>
+        <tr><td>Cloudflare 连不上</td><td>免费版边缘节点在国内可能不稳定，可切 Tailscale/ZeroTier 兜底</td></tr>
+        <tr><td>引擎一直「未启用」</td><td>确认勾选开关且 Token 已填；查看数据目录 info.log</td></tr>
+        <tr><td>Token 看不到完整值</td><td>属正常打码保护，重新保存即覆盖</td></tr>
+      </table>
+      <p class="small" style="margin-top:16px">更多说明见随包《使用教程》。配置持久化于应用数据目录 tunnel.env，日志见 info.log。</p>
+    </div>
+  </div>
+</div>
+
+<!-- 弹窗 -->
+<div class="mask" id="mask">
+  <div class="popup">
+    <h2>来一起瞎折腾</h2>
+    <p class="sub">发现了穿透管家，欢迎加入我们的折腾圈子：一起交流 NAS、内网穿透、HomeLab 各种玩法。</p>
+    <div class="row">
+      <a class="pbtn qq" href="https://qm.qq.com/q/y5Nzu7bVWS" target="_blank" rel="noopener">加入 QQ 群聊【瞎折腾】</a>
+      <div class="sep">— 或 —</div>
+      <a class="pbtn gzh" href="javascript:void(0)" onclick="gzhTip()">关注公众号【一起瞎折腾】</a>
+      <a class="pbtn gh" href="https://github.com/jiankujidu/fn-tunnel-hub" target="_blank" rel="noopener">GitHub ⭐ 项目主页</a>
+      <a class="pbtn tg" href="https://t.me/+5zdHmNqXIZdmYWVl" target="_blank" rel="noopener">Telegram 频道加入</a>
+    </div>
+    <div class="close"><a href="javascript:void(0)" onclick="hidePop()">暂不加入，进入应用 &gt;</a></div>
+  </div>
+</div>
+
+<!-- 强制更新弹窗 -->
+<div class="mask" id="umask">
+  <div class="popup">
+    <h2>发现新版本 v<span id="u_new"></span></h2>
+    <p class="sub">当前版本 v<span id="u_cur"></span>。穿透管家已发布新版本，建议尽快更新以获取最新功能与问题修复。</p>
+    <div class="row">
+      <a class="pbtn gh" id="u_url" href="https://github.com/jiankujidu/fn-tunnel-hub/releases/latest" target="_blank" rel="noopener">前往 GitHub 下载新版</a>
+      <a class="pbtn tg" href="https://github.com/jiankujidu/fn-tunnel-hub/releases" target="_blank" rel="noopener">查看更新记录</a>
+    </div>
+    <div class="close"><a href="javascript:void(0)" onclick="hideUPop()">稍后更新 &gt;</a></div>
+  </div>
+</div>
+
+<script>
+const engines=[
+ {name:"Cloudflare Tunnel",desc:"绑定自己的域名，全球边缘节点，免费不限流量",key:"cf"},
+ {name:"Tailscale",desc:"P2P 直连打洞，直连不限速不限流",key:"ts"},
+ {name:"ZeroTier",desc:"虚拟局域网，P2P 直连，免费 50 节点",key:"zt"},
+ {name:"openP2P",desc:"开源 P2P 打洞，支持域名绑定，不限速",key:"p2p"}
+];
+const root="status.json";
+
+function render(st){
+ const box=document.getElementById("cards");
+ box.innerHTML="";
+ engines.forEach(e=>{
+  const running=!!(st&&st[e.key]);
+  box.insertAdjacentHTML("beforeend",
+   `<div class="card"><h3>${e.name}</h3><p>${e.desc}</p>`+
+   `<p><span class="badge ${running?"ok":"wait"}">${running?"运行中":"未启用"}</span></p></div>`);
+ });
+}
+function loadStatus(){
+ fetch(root,{cache:"no-store"}).then(r=>r.ok?r.json():null).then(render).catch(()=>render(null));
+}
+loadStatus();
+setInterval(loadStatus, 5000);
+
+function showPage(p){
+ document.querySelectorAll(".page").forEach(x=>x.classList.remove("show"));
+ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+ document.getElementById("page-"+p).classList.add("show");
+ document.querySelector(`.tab[onclick="showPage('${p}')"]`).classList.add("active");
+ if(p==="settings") loadCfg();
+}
+
+/* 配置读取回填 */
+function loadCfg(){
+ fetch("config.cgi",{cache:"no-store",method:"GET"})
+  .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+  .then(function(d){
+   document.getElementById("cf_token").value=d.cf_token||"";
+   document.getElementById("cf_hostname").value=d.cf_hostname||"";
+   document.getElementById("ts_authkey").value=d.ts_authkey||"";
+   document.getElementById("ts_hostname").value=d.ts_hostname||"fnos-nas";
+   document.getElementById("zt_netid").value=d.zt_netid||"";
+   document.getElementById("p2p_peerid").value=d.p2p_peerid||"";
+   document.getElementById("p2p_token").value=d.p2p_token||"";
+   document.getElementById("enable_cf").checked=(d.enable_cf||"").match(/^(true|on|1)$/i);
+   document.getElementById("enable_ts").checked=(d.enable_ts||"").match(/^(true|on|1)$/i);
+   document.getElementById("enable_zt").checked=(d.enable_zt||"").match(/^(true|on|1)$/i);
+   document.getElementById("enable_p2p").checked=(d.enable_p2p||"").match(/^(true|on|1)$/i);
+  }).catch(function(){ setMsg("读取配置失败（CGI 可能未启用或应用未运行）","err"); });
+}
+
+/* 保存配置 */
+function saveCfg(){
+ const btn=document.getElementById("saveBtn");
+ const msg=document.getElementById("saveMsg");
+ btn.disabled=true; setMsg("保存中…","");
+ const on=v=>v?"on":"off";
+ const data=new URLSearchParams();
+ data.set("enable_cf",on(document.getElementById("enable_cf").checked));
+ data.set("cf_token",document.getElementById("cf_token").value.trim());
+ data.set("cf_hostname",document.getElementById("cf_hostname").value.trim());
+ data.set("enable_ts",on(document.getElementById("enable_ts").checked));
+ data.set("ts_authkey",document.getElementById("ts_authkey").value.trim());
+ data.set("ts_hostname",document.getElementById("ts_hostname").value.trim()||"fnos-nas");
+ data.set("enable_zt",on(document.getElementById("enable_zt").checked));
+ data.set("zt_netid",document.getElementById("zt_netid").value.trim());
+ data.set("enable_p2p",on(document.getElementById("enable_p2p").checked));
+ data.set("p2p_peerid",document.getElementById("p2p_peerid").value.trim());
+ data.set("p2p_token",document.getElementById("p2p_token").value.trim());
+ fetch("config.cgi",{method:"POST",body:data})
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+   msg.className="msg "+(d.ok?"ok":"err");
+   msg.textContent=d.msg||(d.ok?"配置已保存":"保存失败");
+   if(d.ok){ loadStatus(); }
+  })
+  .catch(function(){ setMsg("保存请求失败，请检查面板是否在运行","err"); })
+  .finally(function(){ btn.disabled=false; });
+}
+function setMsg(t,c){ const m=document.getElementById("saveMsg"); m.className="msg "+(c||""); m.textContent=t; }
+
+/* 弹窗逻辑 */
+function showPop(){document.getElementById("mask").classList.add("show");}
+function hidePop(){document.getElementById("mask").classList.remove("show");}
+function gzhTip(){hidePop();alert("请打开微信搜索公众号【一起瞎折腾】并关注，感谢支持！");}
+function hideUPop(){document.getElementById("umask").classList.remove("show");}
+/* 强制更新弹窗：读取 cmd/main 生成的 update.json，检测到新版本优先弹更新窗 */
+function showUpdatePop(d){
+ document.getElementById("u_new").textContent=d.latest||"";
+ document.getElementById("u_cur").textContent=d.local||"";
+ document.getElementById("u_url").href=d.url||"https://github.com/jiankujidu/fn-tunnel-hub/releases/latest";
+ document.getElementById("umask").classList.add("show");
+}
+function initPop(){
+ fetch("update.json",{cache:"no-store"})
+  .then(function(r){return r.ok?r.json():null;})
+  .then(function(d){
+   if(d&&d.has_new){showUpdatePop(d);}else{setTimeout(showPop,800);}
+  })
+  .catch(function(){setTimeout(showPop,800);});
+}
+initPop();
+</script>
+</body>
+</html>
