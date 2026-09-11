@@ -14,7 +14,7 @@ DATA_DIR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/fn-tunnel-hub}"
 CMD_DIR="$(dirname "$(readlink -f "$0")")"
 export CMD_DIR
 # 应用版本（与 manifest 同步维护；用于 GitHub Release 检测，前端据此弹强制更新窗）
-VERSION="2.2.0"
+VERSION="2.2.1"
 GITHUB_REPO="jiankujidu/fn-tunnel-hub"
 # 日志文件
 LOG_FILE="${DATA_DIR}/info.log"
@@ -138,6 +138,11 @@ start_panel() {
     if [ -f "${APP_DIR}/www/config.cgi" ]; then
         cp -f "${APP_DIR}/www/config.cgi" "${DATA_DIR}/www/config.cgi"
         chmod +x "${DATA_DIR}/www/config.cgi"
+    fi
+    # 状态采集 CGI（实时返回各引擎 IP/域名/端口/运行时长等详情）
+    if [ -f "${APP_DIR}/www/status.cgi" ]; then
+        cp -f "${APP_DIR}/www/status.cgi" "${DATA_DIR}/www/status.cgi"
+        chmod +x "${DATA_DIR}/www/status.cgi"
     fi
     # busybox httpd 的 CGI 映射配置
     printf '*.cgi:/bin/sh\n' > "${DATA_DIR}/www/httpd.conf"
