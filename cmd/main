@@ -1,0 +1,373 @@
+#!/bin/bash
+# 穿透管家 生命周期入口（原生模式：全内置二进制，无 Docker）
+# 面板用内置 busybox httpd；四个引擎按架构直接启动宿主机进程。
+
+set -u
+
+# ---------- 路径约定 ----------
+# app 安装目录（read-only，含二进制与页面）
+APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/fn-tunnel-hub}"
+# 应用数据目录（read-write，pid/日志/状态/引擎数据）
+DATA_DIR="${TRIM_PKGVAR:-/usr/local/apps/@appdata/fn-tunnel-hub}"
+# 生命周期脚本目录：fnOS 将 cmd/ 解包到 /var/apps/{appname}/cmd，并不在 TRIM_APPDEST（target）下。
+# 由本脚本自身位置（$0）解析并 export，供 config.cgi（httpd 子进程）继承，避免“cmd/main 缺失”误报。
+CMD_DIR="$(dirname "$(readlink -f "$0")")"
+export CMD_DIR
+# 应用版本（与 manifest 同步维护；用于 GitHub Release 检测，前端据此弹强制更新窗）
+VERSION="2.2.0"
+GITHUB_REPO="jiankujidu/fn-tunnel-hub"
+# 日志文件
+LOG_FILE="${DATA_DIR}/info.log"
+
+ENV_FILE="${DATA_DIR}/tunnel.env"
+STATUS_FILE="${DATA_DIR}/www/status.json"   # busybox httpd 直接可读
+PORT="${TRIM_PANEL_PORT:-19999}"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+# ---------- 架构选择 ----------
+select_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        *) ARCH="amd64" ;;
+    esac
+    # 优先使用数据目录内的可更新二进制；缺失则回退到内置二进制（包内 app.tgz 解包后位于安装根 app/ 目录下）
+    if [ -x "${DATA_DIR}/bin/${ARCH}/busybox" ]; then
+        BIN_DIR="${DATA_DIR}/bin/${ARCH}"
+    else
+        BIN_DIR="${APP_DIR}/bin/${ARCH}"
+    fi
+    WWW_DIR="${DATA_DIR}/www"
+    log_msg "arch=${ARCH} bin=${BIN_DIR}"
+}
+
+# ---------- 配置 ----------
+load_env() {
+    if [ -f "${ENV_FILE}" ]; then
+        set -a
+        . "${ENV_FILE}"
+        set +a
+    fi
+    export CF_TOKEN="${wizard_cf_token:-${CF_TOKEN:-}}"
+    export CF_HOSTNAME="${wizard_cf_hostname:-${CF_HOSTNAME:-}}"
+    export TS_AUTHKEY="${wizard_ts_authkey:-${TS_AUTHKEY:-}}"
+    export TS_HOSTNAME="${wizard_ts_hostname:-${TS_HOSTNAME:-fnos-nas}}"
+    export ZT_NETID="${wizard_zt_netid:-${ZT_NETID:-}}"
+    # openp2p
+    export P2P_PEERID="${wizard_p2p_peerid:-${P2P_PEERID:-}}"
+    export P2P_TOKEN="${wizard_p2p_token:-${P2P_TOKEN:-}}"
+    # 引擎启用开关：优先向导值 → 面板设置持久化值；空则按"有 token 即启用"兼容旧环境
+    export ENABLE_CF="${wizard_enable_cf:-${ENABLE_CF:-}}"
+    export ENABLE_TS="${wizard_enable_ts:-${ENABLE_TS:-}}"
+    export ENABLE_ZT="${wizard_enable_zt:-${ENABLE_ZT:-}}"
+    export ENABLE_P2P="${wizard_enable_p2p:-${ENABLE_P2P:-}}"
+    # 自动更新守卫：安装向导开关 → 持久化
+    export UPDATE_ENABLED="${wizard_auto_update:-${UPDATE_ENABLED:-}}"
+    # 面板端口：优先向导值，其次已有持久化值，最后回落默认 19999
+    PORT="${wizard_panel_port:-${PANEL_PORT:-19999}}"
+    case "${PORT}" in
+        ''|*[!0-9]*) PORT=19999 ;;
+    esac
+    export PORT
+}
+
+persist_env() {
+    : > "${ENV_FILE}"
+    cat >> "${ENV_FILE}" <<EOF
+CF_TOKEN=${CF_TOKEN:-}
+CF_HOSTNAME=${CF_HOSTNAME:-}
+TS_AUTHKEY=${TS_AUTHKEY:-}
+TS_HOSTNAME=${TS_HOSTNAME:-fnos-nas}
+ZT_NETID=${ZT_NETID:-}
+P2P_PEERID=${P2P_PEERID:-}
+P2P_TOKEN=${P2P_TOKEN:-}
+ENABLE_CF=${ENABLE_CF:-}
+ENABLE_TS=${ENABLE_TS:-}
+ENABLE_ZT=${ENABLE_ZT:-}
+ENABLE_P2P=${ENABLE_P2P:-}
+PANEL_PORT=${PORT:-19999}
+UPDATE_ENABLED=${UPDATE_ENABLED:-}
+EOF
+    log_msg "env persisted to ${ENV_FILE}"
+}
+
+is_enabled() {
+    # 面板设置里明确开关（01/on/true）优先
+    # 严禁用 ${!var} 间接展开：该写法在 busybox ash / dash 下报 bad substitution 中止脚本，
+    # 会表现为“配置已写回但引擎未重启”。用显式映射保持 POSIX 兼容。
+    local v
+    case "$1" in
+        cf) v="${ENABLE_CF:-}" ;;
+        ts) v="${ENABLE_TS:-}" ;;
+        zt) v="${ENABLE_ZT:-}" ;;
+        p2p) v="${ENABLE_P2P:-}" ;;
+        *) return 1 ;;
+    esac
+    case "$v" in
+        true|TRUE|on|ON|1) return 0 ;;
+        false|FALSE|off|OFF|0) return 1 ;;
+    esac
+    # 兼容旧环境：未设置开关但有 token 也视为启用
+    case "$1" in
+        cf) [ -n "${CF_TOKEN:-}" ] && return 0 ;;
+        ts) [ -n "${TS_AUTHKEY:-}" ] && return 0 ;;
+        zt) [ -n "${ZT_NETID:-}" ] && return 0 ;;
+        p2p) { [ -n "${P2P_PEERID:-}" ] || [ -n "${P2P_TOKEN:-}" ]; } && return 0 ;;
+    esac
+    return 1
+}
+
+# ---------- PID 管理 ----------
+pid_file()   { echo "${DATA_DIR}/engine-$1.pid"; }
+is_running() { # $1=pid
+    [ -n "$1" ] && kill -0 "$1" 2>/dev/null
+}
+
+# ---------- 面板（busybox httpd） ----------
+start_panel() {
+    # 清理本应用同 docroot 的残留 httpd（防旧例占用端口导致启动失败）
+    pkill -f "busybox httpd.*-h ${DATA_DIR}/www" 2>/dev/null
+    sleep 1
+    # 拷贝静态页面到数据目录，供 httpd 服务（内置页面位于安装根 www/）
+    mkdir -p "${DATA_DIR}/www"
+    cp -f "${APP_DIR}/www/index.html" "${APP_DIR}/www/favicon.png" "${DATA_DIR}/www/" 2>/dev/null
+    # 配置接口 CGI
+    if [ -f "${APP_DIR}/www/config.cgi" ]; then
+        cp -f "${APP_DIR}/www/config.cgi" "${DATA_DIR}/www/config.cgi"
+        chmod +x "${DATA_DIR}/www/config.cgi"
+    fi
+    # busybox httpd 的 CGI 映射配置
+    printf '*.cgi:/bin/sh\n' > "${DATA_DIR}/www/httpd.conf"
+    # 若已有旧 status.json 保留；否则初始化
+    [ -f "${STATUS_FILE}" ] || echo '{"cf":false,"ts":false,"zt":false,"p2p":false}' > "${STATUS_FILE}"
+    # 主监听端口（用户可配置，向导面板端口）
+    nohup "${BIN_DIR}/busybox" httpd -f -c "${DATA_DIR}/www/httpd.conf" -p ${PORT} -h "${DATA_DIR}/www" >> "${LOG_FILE}" 2>&1 &
+    echo $! > "${DATA_DIR}/pid-httpd"
+    echo "{\"panelPort\":${PORT}}" > "${DATA_DIR}/www/panel.json"
+    # 兼容飞牛桌面图标入口（ui/config 固定 19999）：若用户自定义了主端口，额外监听 19999，保证从桌面图标也能打开面板
+    if [ "${PORT}" != "19999" ]; then
+        nohup "${BIN_DIR}/busybox" httpd -f -c "${DATA_DIR}/www/httpd.conf" -p 19999 -h "${DATA_DIR}/www" >> "${LOG_FILE}" 2>&1 &
+        echo $! > "${DATA_DIR}/pid-httpd-19999"
+        log_msg "panel compat listener :19999 pid=$(cat ${DATA_DIR}/pid-httpd-19999 2>/dev/null)"
+    fi
+    log_msg "panel httpd main :${PORT} pid=$(cat ${DATA_DIR}/pid-httpd 2>/dev/null)"
+}
+
+stop_panel() {
+    for f in "${DATA_DIR}"/pid-httpd*; do
+        [ -f "$f" ] && { kill "$(cat $f)" 2>/dev/null; rm -f "$f"; }
+    done
+    # 兜底：精确匹配本应用 docroot 的残留 busybox httpd（pid 文件可能缺失/记录漂移）
+    local leftovers
+    leftovers="$(pgrep -f "busybox httpd.*-h ${DATA_DIR}/www" 2>/dev/null | grep -v "$$")"
+    [ -n "$leftovers" ] && kill $leftovers 2>/dev/null
+    return 0
+}
+
+# ---------- 各引擎 start/stop ----------
+start_engine_cf() {
+    [ -z "${CF_TOKEN:-}" ] && { log_msg "cf: skip, no token"; return 0; }
+    nohup "${BIN_DIR}/cloudflared" tunnel run --token "${CF_TOKEN}" >> "${LOG_FILE}" 2>&1 &
+    echo $! > "$(pid_file cf)"
+    log_msg "cf started pid=$!"
+}
+start_engine_ts() {
+    [ -z "${TS_AUTHKEY:-}" ] && { log_msg "ts: skip, no authkey"; return 0; }
+    # tailscaled 常驻，随后 tailscale up 登录
+    # --tun=userspace-networking：容器/精简内核等无 /dev/net/tun 的环境也能跑通 Tailscale（beta 特性，稳定可用）
+    nohup "${BIN_DIR}/tailscaled" --state="${DATA_DIR}/ts-state" --socket="${DATA_DIR}/ts.sock" --statedir="${DATA_DIR}/tstail" --tun=userspace-networking >> "${LOG_FILE}" 2>&1 &
+    local dpid=$!
+    echo $dpid > "$(pid_file ts)"
+    sleep 2
+    "${BIN_DIR}/tailscale" --socket="${DATA_DIR}/ts.sock" up --authkey="${TS_AUTHKEY}" --hostname="${TS_HOSTNAME:-fnos-nas}" >> "${LOG_FILE}" 2>&1 &
+    echo $! > "$(pid_file ts-up)"
+    log_msg "ts started daemon=${dpid}"
+}
+start_engine_zt() {
+    [ -z "${ZT_NETID:-}" ] && { log_msg "zt: skip, no netid"; return 0; }
+    # 确保数据目录存在：zerotier-one 默认把数据写 /var/lib/zerotier-one，目录缺失时守护进程会启动即退出
+    mkdir -p /var/lib/zerotier-one 2>/dev/null || true
+    # 后台 daemon（root 可写 /var/lib/zerotier-one）
+    nohup "${BIN_DIR}/zerotier-one" -p9993 >> "${LOG_FILE}" 2>&1 &
+    echo $! > "$(pid_file zt)"
+    sleep 3
+    # -q = zerotier-cli 模式，加入网络
+    "${BIN_DIR}/zerotier-one" -q join "${ZT_NETID}" >> "${LOG_FILE}" 2>&1 &
+    echo $! > "$(pid_file zt-join)"
+    log_msg "zt daemon pid=$(cat $(pid_file zt)) join=${ZT_NETID}"
+}
+start_engine_p2p() {
+    { [ -z "${P2P_PEERID:-}" ] && [ -z "${P2P_TOKEN:-}" ]; } && { log_msg "p2p: skip, no config"; return 0; }
+    # openp2p 参数：-token 为 uint（纯数字），-node 8~31 字符，-installpath 为配置目录
+    # （旧版误用 -n 指向数据目录——openp2p 并无 -n flag，启动即报 flag provided but not defined 退出）
+    if [ -n "${P2P_TOKEN:-}" ] && ! echo "${P2P_TOKEN}" | grep -Eq '^[0-9]+$'; then
+        log_msg "p2p: WARN 已忽略启动——App Key(Token) 必须为纯数字（当前输入 ${#P2P_TOKEN} 位，含非数字字符），请到 openp2p 控制台获取"
+        return 0
+    fi
+    if [ -n "${P2P_PEERID:-}" ] && { [ ${#P2P_PEERID} -lt 8 ] || [ ${#P2P_PEERID} -gt 31 ]; }; then
+        log_msg "p2p: WARN 节点名(Peer ID)应在 8~31 字符之间（当前长度 ${#P2P_PEERID}），可能不被 openp2p 接受"
+    fi
+    local p2pargs="-installpath ${DATA_DIR}/p2p -loglevel 2"
+    [ -n "${P2P_PEERID:-}" ] && p2pargs="${p2pargs} -node ${P2P_PEERID}"
+    [ -n "${P2P_TOKEN:-}" ] && p2pargs="${p2pargs} -token ${P2P_TOKEN}"
+    mkdir -p "${DATA_DIR}/p2p"
+    # 前台运行（不带 -d），保证 PID 真实有效
+    nohup "${BIN_DIR}/openp2p" ${p2pargs} >> "${LOG_FILE}" 2>&1 &
+    echo $! > "$(pid_file p2p)"
+    log_msg "p2p started pid=$! args=${p2pargs}"
+}
+stop_engine() {
+    local key=$1
+    local upids=""
+    for f in "${DATA_DIR}"/engine-${key}*.pid; do
+        [ -f "$f" ] && {
+            upids="$upids$(cat $f) "
+            kill "$(cat $f)" 2>/dev/null
+            rm -f "$f"
+        }
+    done
+    # 兜底强杀：openp2p 等守护进程偶发忽略 SIGTERM（卡在网络重试），TERM 后仍存活则升级 KILL 确保复位
+    if [ -n "$upids" ]; then
+        sleep 1
+        for p in $upids; do kill -9 "$p" 2>/dev/null; done
+    fi
+    # tailscaled 需连带清理
+    if [ "${key}" = "ts" ] && [ -f "${DATA_DIR}/ts.sock" ]; then
+        "${BIN_DIR}/tailscale" --socket="${DATA_DIR}/ts.sock" down >> "${LOG_FILE}" 2>&1
+    fi
+    log_msg "engine ${key} stopped"
+}
+
+# ---------- 状态 ----------
+write_status() {
+    echo "{\"cf\":$(is_running "$(cat $(pid_file cf) 2>/dev/null)" && echo true || echo false),\"ts\":$(is_running "$(cat $(pid_file ts) 2>/dev/null)" && echo true || echo false),\"zt\":$(is_running "$(cat $(pid_file zt) 2>/dev/null)" && echo true || echo false),\"p2p\":$(is_running "$(cat $(pid_file p2p) 2>/dev/null)" && echo true || echo false)}" > "${STATUS_FILE}"
+    log_msg "status updated: $(cat ${STATUS_FILE})"
+}
+
+# ---------- GitHub Release 版本检测（强制更新弹窗数据源） ----------
+# 异步调用：拉取仓库最新 release tag，与内置 VERSION 比较，结果写 update.json 供前端读取
+# （查不到/网络失败时写 has_new=false，不阻塞应用启动）
+handle_version_check() {
+    local latest=""
+    if command -v curl >/dev/null 2>&1; then
+        latest="$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep -m1 '"tag_name"' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    fi
+    latest="${latest#v}"
+    local has_new="false"
+    [ -n "$latest" ] && [ "$latest" != "${VERSION}" ] && has_new="true"
+    {
+        echo "{"
+        echo "  \"latest\": \"${latest:-}\","
+        echo "  \"local\": \"${VERSION}\","
+        echo "  \"has_new\": ${has_new},"
+        echo "  \"url\": \"https://github.com/${GITHUB_REPO}/releases/latest\""
+        echo "}"
+    } > "${DATA_DIR}/www/update.json"
+    log_msg "version check: latest=${latest:-none} local=${VERSION} has_new=${has_new}"
+}
+
+start() {
+    select_arch
+    mkdir -p "${DATA_DIR}" "${DATA_DIR}/www"
+    load_env
+    persist_env
+    start_panel
+    is_enabled cf && start_engine_cf
+    is_enabled ts && start_engine_ts
+    is_enabled zt && start_engine_zt
+    is_enabled p2p && start_engine_p2p
+    sleep 1
+    write_status
+    # GitHub Release 版本检测：异步执行，结果写 update.json，前端据此弹「发现新版本」强制更新窗
+    ( handle_version_check ) &
+    # 自动更新守卫：安装向导/持久化开关为 on 时后台拉起 updater（单实例，已运行则跳过）
+    case "${UPDATE_ENABLED:-}" in
+        true|TRUE|on|ON|1)
+            if [ -f "${DATA_DIR}/pid-updater" ] && is_running "$(cat ${DATA_DIR}/pid-updater 2>/dev/null)"; then
+                log_msg "updater: already running pid=$(cat ${DATA_DIR}/pid-updater 2>/dev/null)"
+            else
+                [ -x "${CMD_DIR}/updater.sh" ] && {
+                    nohup "${CMD_DIR}/updater.sh" >> "${LOG_FILE}" 2>&1 &
+                    echo $! > "${DATA_DIR}/pid-updater"
+                    log_msg "updater: started pid=$! interval=${UPDATE_INTERVAL:-21600}s"
+                }
+            fi
+            ;;
+    esac
+    return 0
+}
+
+stop() {
+    select_arch
+    for k in p2p zt ts cf; do stop_engine $k; done
+    # 停止自动更新守护：与面板/引擎同生命周期，避免应用停止后仍在后台下载
+    if [ -f "${DATA_DIR}/pid-updater" ]; then
+        kill "$(cat ${DATA_DIR}/pid-updater 2>/dev/null)" 2>/dev/null
+        rm -f "${DATA_DIR}/pid-updater"
+    fi
+    pkill -f "${CMD_DIR}/updater.sh" 2>/dev/null
+    sleep 1
+    pkill -9 -f "${CMD_DIR}/updater.sh" 2>/dev/null
+    stop_panel
+    return 0
+}
+
+status() {
+    select_arch
+    local any=0
+    if [ -f "${DATA_DIR}/pid-httpd" ] && is_running "$(cat ${DATA_DIR}/pid-httpd)"; then any=1; fi
+    for f in "${DATA_DIR}"/engine-*.pid; do
+        [ -f "$f" ] && is_running "$(cat $f)" && { any=1; break; }
+    done
+    [ "$any" = "1" ] && return 0
+    return 3
+}
+
+# ---------- 面板设置应用（由 config.cgi 调用） ----------
+# $1 = pending 配置文件路径（KEY='value' 行），合并进 tunnel.env 后重启引擎（不重启面板）
+apply_config() {
+    local pending="$1"
+    [ -n "$pending" ] && [ -f "$pending" ] || { log_msg "apply_config: no pending file"; return 1; }
+    select_arch
+    mkdir -p "${DATA_DIR}" "${DATA_DIR}/www"
+    load_env
+    # 合并新的配置项
+    set -a
+    . "$pending"
+    set +a
+    # 引擎开关：0/off/false 显式关闭会成为空？这里统一留真实值
+    export ENABLE_CF="${wizard_enable_cf:-${ENABLE_CF:-}}"
+    export ENABLE_TS="${wizard_enable_ts:-${ENABLE_TS:-}}"
+    export ENABLE_ZT="${wizard_enable_zt:-${ENABLE_ZT:-}}"
+    export ENABLE_P2P="${wizard_enable_p2p:-${ENABLE_P2P:-}}"
+    # 端口校验（若面板改了端口，下次重启生效；本次保持现有 httpd 不中断）
+    local np="${PANEL_PORT:-}"
+    case "${np}" in
+        ''|*[!0-9]*) : ;;
+        *) PORT="${np}" ;;
+    esac
+    export PORT
+    persist_env
+    # 重启所有引擎（先全停，再按新配置启动）
+    local k
+    for k in p2p zt ts cf; do stop_engine $k; done
+    is_enabled cf && start_engine_cf
+    is_enabled ts && start_engine_ts
+    is_enabled zt && start_engine_zt
+    is_enabled p2p && start_engine_p2p
+    sleep 1
+    write_status
+    log_msg "apply_config done"
+    return 0
+}
+
+case "$1" in
+  start)  start ;;
+  stop)   stop ;;
+  status) status ;;
+  apply_config) apply_config "${2:-}" ;;
+  *)      exit 1 ;;
+esac
